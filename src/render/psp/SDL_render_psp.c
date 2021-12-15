@@ -70,6 +70,7 @@ typedef struct
 {
     void*           frontbuffer ;
     void*           backbuffer ;
+    SDL_Texture*    boundTarget;
     SDL_bool        initialized ;
     SDL_bool        displayListAvail ;
     unsigned int    psm ;
@@ -205,11 +206,24 @@ void
 StartDrawing(SDL_Renderer * renderer)
 {
     PSP_RenderData *data = (PSP_RenderData *) renderer->driverdata;
-    if(data->displayListAvail)
-        return;
+    if(!data->displayListAvail) {
+        sceGuStart(GU_DIRECT, DisplayList);
+        data->displayListAvail = SDL_TRUE;
+    }
 
-    sceGuStart(GU_DIRECT, DisplayList);
-    data->displayListAvail = SDL_TRUE;
+    // Check if we need a draw buffer change
+    if(renderer->target != data->boundTarget) {
+        SDL_Texture* texture = renderer->target;
+        if(texture) {
+            PSP_TextureData* psp_texture = (PSP_TextureData*) texture->driverdata;
+            // Set target back to screen
+            sceGuDrawBufferList(psp_texture->format, vrelptr(psp_texture->data), psp_texture->textureWidth);
+        } else {
+            // Set target back to screen
+            sceGuDrawBufferList(data->psm, vrelptr(data->frontbuffer), PSP_FRAME_BUFFER_WIDTH);
+        }
+        data->boundTarget = texture;
+    }
 }
 
 
@@ -837,23 +851,22 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
             }
 
             case SDL_RENDERCMD_SETVIEWPORT: {
-                SDL_Rect *viewport = &data->drawstate.viewport;
-                if (SDL_memcmp(viewport, &cmd->data.viewport.rect, sizeof (SDL_Rect)) != 0) {
-                    SDL_memcpy(viewport, &cmd->data.viewport.rect, sizeof (SDL_Rect));
-                    data->drawstate.viewport_dirty = SDL_TRUE;
-                }
+                SDL_Rect *viewport = &cmd->data.viewport.rect;
+                /* Viewport */
+                sceGuOffset(2048 - (viewport->w >> 1), 2048 - (viewport->h >> 1));
+                sceGuViewport(2048, 2048, viewport->w, viewport->h);
+                sceGuScissor(viewport->x, viewport->y, viewport->w, viewport->h);
                 break;
             }
 
             case SDL_RENDERCMD_SETCLIPRECT: {
                 const SDL_Rect *rect = &cmd->data.cliprect.rect;
-                if (data->drawstate.cliprect_enabled != cmd->data.cliprect.enabled) {
-                    data->drawstate.cliprect_enabled = cmd->data.cliprect.enabled;
-                    data->drawstate.cliprect_enabled_dirty = SDL_TRUE;
-                }
-                if (SDL_memcmp(&data->drawstate.cliprect, rect, sizeof (SDL_Rect)) != 0) {
-                    SDL_memcpy(&data->drawstate.cliprect, rect, sizeof (SDL_Rect));
-                    data->drawstate.cliprect_dirty = SDL_TRUE;
+                /* Scissoring */
+                if(cmd->data.cliprect.enabled){
+                    sceGuEnable(GU_SCISSOR_TEST);
+                    sceGuScissor(rect->x, rect->y, rect->w, rect->h);
+                } else {
+                    sceGuDisable(GU_SCISSOR_TEST);
                 }
                 break;
             }
@@ -866,8 +879,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
                 const Uint32 color = (((Uint32)a << 24) | (b << 16) | (g << 8) | r);
                 /* !!! FIXME: we could cache drawstate like clear color */
                 sceGuClearColor(color);
-                sceGuClearDepth(0);
-                sceGuClear(GU_COLOR_BUFFER_BIT|GU_DEPTH_BUFFER_BIT|GU_FAST_CLEAR_BIT);
+                sceGuClear(GU_COLOR_BUFFER_BIT);
                 break;
             }
 
@@ -1164,6 +1176,8 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
 
     data->frontbuffer = vabsptr(data->frontbuffer);
     data->backbuffer = vabsptr(data->backbuffer);
+
+    sceGuDisable(GU_DEPTH_TEST);
 
     /* Scissoring */
     sceGuScissor(0, 0, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
