@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2021 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2022 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -186,6 +186,33 @@ typedef struct
 
     //PSP_TextureData*   gc_head;
     //PSP_TextureData*   gc_tail;
+
+    SDL_bool           vblank_not_reached;                  /**< wether vblank wasn't reached */
+} PSP_RenderData;
+
+
+typedef struct
+{
+    SDL_BlendMode mode;
+    unsigned int color;
+    int shadeModel;
+    SDL_Texture* texture;
+} PSP_BlendState;
+
+typedef struct
+{
+    void*              frontbuffer;                         /**< main screen buffer */
+    void*              backbuffer;                          /**< buffer presented to display */
+    SDL_Texture*       boundTarget;                         /**< currently bound rendertarget */
+    SDL_bool           initialized;                         /**< is driver initialized */
+    SDL_bool           displayListAvail;                    /**< is the display list already initialized for this frame */
+    unsigned int       psm;                                 /**< format of the display buffers */
+    unsigned int       bpp;                                 /**< bits per pixel of the main display */
+
+    SDL_bool           vsync;                               /**< wether we do vsync */
+    PSP_BlendState     blendState;                          /**< current blend mode */
+    PSP_TextureData*   most_recent_target;                  /**< start of render target LRU double linked list */
+    PSP_TextureData*   least_recent_target;                 /**< end of the LRU list */
 
     SDL_bool           vblank_not_reached;                  /**< wether vblank wasn't reached */
 } PSP_RenderData;
@@ -408,6 +435,7 @@ TextureSwizzle(PSP_TextureData *psp_texture, void* dst)
         }
 
     TextureStorageFree(psp_texture->data, psp_texture->size);
+
     psp_texture->data = data;
     psp_texture->swizzled = SDL_TRUE;
 
@@ -661,7 +689,7 @@ static int
 TextureShouldSwizzle(PSP_TextureData* psp_texture, SDL_Texture *texture)
 {
     return !((texture->access == SDL_TEXTUREACCESS_TARGET) && InVram(psp_texture->data))
-        && (texture->w >= 16 || texture->h >= 16);
+             && (texture->w >= 16 || texture->h >= 16);
 }
 
 static void
@@ -672,9 +700,9 @@ TextureActivate(SDL_Texture * texture)
 
     /* Swizzling is useless with small textures. */
     if (TextureShouldSwizzle(psp_texture, texture))
-        {
-            TextureSwizzle(psp_texture, NULL);
-        }
+    {
+        TextureSwizzle(psp_texture, NULL);
+    }
 
     sceGuTexWrap(GU_REPEAT, GU_REPEAT);
     sceGuTexMode(psp_texture->format, 0, 0, psp_texture->swizzled);
@@ -1085,10 +1113,7 @@ StartDrawing(SDL_Renderer * renderer)
     if(!data->displayListAvail) {
         sceGuStart(GU_DIRECT, DisplayList);
         data->displayListAvail = SDL_TRUE;
-
-        //recording_epoch = 1;
-        //signaled_epoch = 0;
-        //ResetBlendState(&data->blendState);
+        ResetBlendState(&data->blendState);
     }
 
     // Check if we need a draw buffer change
@@ -1160,7 +1185,6 @@ PSP_SetBlendState(PSP_RenderData* data, PSP_BlendState* state)
             sceGuDisable(GU_TEXTURE_2D);
         }
     }
-
 
     *current = *state;
 }
@@ -1532,8 +1556,6 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
         return 0;
     data->initialized = SDL_TRUE;
 
-    //data->lru_targets = NULL;
-    //data->gc_list = NULL;
 
     if (flags & SDL_RENDERER_PRESENTVSYNC) {
         data->vsync = SDL_TRUE;
@@ -1555,6 +1577,10 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
             data->psm = GU_PSM_8888;
             break;
         }
+
+    doublebuffer = valloc(PSP_FRAME_BUFFER_SIZE*data->bpp*2);
+    data->backbuffer = doublebuffer;
+    data->frontbuffer = ((uint8_t*)doublebuffer)+PSP_FRAME_BUFFER_SIZE*data->bpp;
 
     doublebuffer = valloc(PSP_FRAME_BUFFER_SIZE*data->bpp*2);
     data->backbuffer = doublebuffer;

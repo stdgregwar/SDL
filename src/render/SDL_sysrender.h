@@ -1,6 +1,6 @@
 /*
   Simple DirectMedia Layer
-  Copyright (C) 1997-2021 Sam Lantinga <slouken@libsdl.org>
+  Copyright (C) 1997-2022 Sam Lantinga <slouken@libsdl.org>
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -105,6 +105,13 @@ typedef struct SDL_RenderCommand
     } data;
     struct SDL_RenderCommand *next;
 } SDL_RenderCommand;
+
+
+typedef struct SDL_VertexSolid
+{
+    SDL_FPoint position;
+    SDL_Color  color;
+} SDL_VertexSolid;
 
 
 /* Define the SDL renderer structure */
