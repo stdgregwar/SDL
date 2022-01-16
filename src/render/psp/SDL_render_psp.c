@@ -91,7 +91,7 @@ static void PSP_IncreaseEpoch(){
 }
 
 static void PSP_WaitForEpoch(unsigned long epoch) {
-    SDL_Log("Waiting for epoch %ld, signaled : %ld, recording : %ld", epoch, signaled_epoch, recording_epoch);
+    //SDL_Log("Waiting for epoch %ld, signaled : %ld, recording : %ld", epoch, signaled_epoch, recording_epoch);
     if(signaled_epoch >= epoch) {
         return;
     }
@@ -178,41 +178,9 @@ typedef struct
 
     SDL_bool           vsync;                               /**< wether we do vsync */
     PSP_BlendState     blendState;                          /**< current blend mode */
-    //PSP_TextureData*   most_recent_target;                  /**< start of render target LRU double linked list */
-    //PSP_TextureData*   least_recent_target;                 /**< end of the LRU list */
 
     PSP_TextureList    lru_targets;                         /**< render target LRU */
     PSP_TextureList    gc_list;                             /**< garbage collection list */
-
-    //PSP_TextureData*   gc_head;
-    //PSP_TextureData*   gc_tail;
-
-    SDL_bool           vblank_not_reached;                  /**< wether vblank wasn't reached */
-} PSP_RenderData;
-
-
-typedef struct
-{
-    SDL_BlendMode mode;
-    unsigned int color;
-    int shadeModel;
-    SDL_Texture* texture;
-} PSP_BlendState;
-
-typedef struct
-{
-    void*              frontbuffer;                         /**< main screen buffer */
-    void*              backbuffer;                          /**< buffer presented to display */
-    SDL_Texture*       boundTarget;                         /**< currently bound rendertarget */
-    SDL_bool           initialized;                         /**< is driver initialized */
-    SDL_bool           displayListAvail;                    /**< is the display list already initialized for this frame */
-    unsigned int       psm;                                 /**< format of the display buffers */
-    unsigned int       bpp;                                 /**< bits per pixel of the main display */
-
-    SDL_bool           vsync;                               /**< wether we do vsync */
-    PSP_BlendState     blendState;                          /**< current blend mode */
-    PSP_TextureData*   most_recent_target;                  /**< start of render target LRU double linked list */
-    PSP_TextureData*   least_recent_target;                 /**< end of the LRU list */
 
     SDL_bool           vblank_not_reached;                  /**< wether vblank wasn't reached */
 } PSP_RenderData;
@@ -797,7 +765,8 @@ PSP_QueueSetViewport(SDL_Renderer * renderer, SDL_RenderCommand *cmd)
 static int
 PSP_QueueDrawPoints(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_FPoint * points, int count)
 {
-    VertV *verts = (VertV *) SDL_AllocateRenderVertices(renderer, count * sizeof (VertV), 4, &cmd->data.draw.first);
+    VertCV *verts = (VertCV *) SDL_AllocateRenderVertices(renderer, count * sizeof (VertCV), 4, &cmd->data.draw.first);
+    SDL_Color col = {cmd->data.draw.r, cmd->data.draw.g, cmd->data.draw.b, cmd->data.draw.a};
     int i;
 
     if (!verts) {
@@ -810,6 +779,7 @@ PSP_QueueDrawPoints(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_F
         verts->x = points->x;
         verts->y = points->y;
         verts->z = 0.0f;
+        verts->col = col;
     }
 
     return 0;
@@ -893,8 +863,8 @@ PSP_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *t
 
             verts->col = col_;
 
-            verts->u = uv_[0] * psp_texture->textureWidth;
-            verts->v = uv_[1] * psp_texture->textureHeight;
+            verts->u = uv_[0] * psp_texture->width;
+            verts->v = uv_[1] * psp_texture->height;
 
             verts++;
         }
@@ -906,24 +876,27 @@ PSP_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *t
 static int
 PSP_QueueFillRects(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_FRect * rects, int count)
 {
-    VertV *verts = (VertV *) SDL_AllocateRenderVertices(renderer, count * 2 * sizeof (VertV), 4, &cmd->data.draw.first);
+    VertCV *verts = (VertCV *) SDL_AllocateRenderVertices(renderer, count * 2 * sizeof (VertCV), 4, &cmd->data.draw.first);
+    SDL_Color col = {cmd->data.draw.r, cmd->data.draw.g, cmd->data.draw.b, cmd->data.draw.a};
     int i;
 
     if (!verts) {
         return -1;
     }
 
-    cmd->data.draw.count = count;
+    cmd->data.draw.count = count * 2;
     for (i = 0; i < count; i++, rects++) {
         const SDL_FRect *rect = &rects[i];
         verts->x = rect->x;
         verts->y = rect->y;
         verts->z = 0.0f;
+        verts->col = col;
         verts++;
 
         verts->x = rect->x + rect->w;
         verts->y = rect->y + rect->h;
         verts->z = 0.0f;
+        verts->col = col;
         verts++;
     }
 
@@ -1108,12 +1081,25 @@ static void
 StartDrawing(SDL_Renderer * renderer)
 {
     PSP_RenderData *data = (PSP_RenderData *) renderer->driverdata;
+    ScePspFMatrix4 id;
 
     // Check if we need to start GU displaylist
     if(!data->displayListAvail) {
         sceGuStart(GU_DIRECT, DisplayList);
         data->displayListAvail = SDL_TRUE;
         ResetBlendState(&data->blendState);
+
+        /*memset(&id,0,sizeof(ScePspFMatrix4));
+
+        for (int i = 0; i < 4; ++i)
+            ((float*)&id)[(i << 2)+i] = 1.0f;
+
+        for(int i = 0; i < 4; i++) {
+            sceGuSetMatrix(i, &id);
+        }
+
+        sceGuDepthRange(65535,0);
+        */
     }
 
     // Check if we need a draw buffer change
@@ -1199,7 +1185,7 @@ PSP_CmdBlendState(const SDL_RenderCommand* cmd){
         .color = GU_RGBA(r,g,b,a),
         .texture = cmd->data.draw.texture,
         .mode = cmd->data.draw.blend,
-        .shadeModel = GU_FLAT
+        .shadeModel = GU_SMOOTH
     };
     return state;
 }
@@ -1221,31 +1207,37 @@ PSP_CmdDrawState(const SDL_RenderCommand* cmd)
 {
     int primitiveType = 0;
     int vertexShape = 0;
+
+    int transform = GU_TRANSFORM_2D;
     switch(cmd->command){
     case SDL_RENDERCMD_DRAW_LINES:
         primitiveType = GU_LINE_STRIP;
-        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | transform;
         break;
     case SDL_RENDERCMD_DRAW_POINTS:
         primitiveType = GU_POINTS;
-        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | transform;
         break;
     case SDL_RENDERCMD_FILL_RECTS:
         primitiveType = GU_SPRITES;
-        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | transform;
         break;
     case SDL_RENDERCMD_COPY:
         primitiveType = GU_SPRITES;
-        vertexShape = GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_VERTEX_32BITF | transform;
         break;
     case SDL_RENDERCMD_GEOMETRY:
     case SDL_RENDERCMD_COPY_EX:
         primitiveType = GU_TRIANGLES;
-        vertexShape = GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | transform;
         break;
     default:
         primitiveType = -1;
         vertexShape = -1;
+    }
+    // If draw has texture we also need to have uv coordinates
+    if(cmd->data.draw.texture){
+        vertexShape |= GU_TEXTURE_32BITF;
     }
     {
         PSP_DrawState ds = {
@@ -1317,8 +1309,11 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
 
         case SDL_RENDERCMD_SETVIEWPORT: {
             SDL_Rect *viewport = &cmd->data.viewport.rect;
-            sceGuOffset(2048 - (viewport->w >> 1), 2048 - (viewport->h >> 1));
-            sceGuViewport(2048, 2048, viewport->w, viewport->h);
+            //SDL_Log("Setting viewport (%d, %d, %d, %d)", viewport->x, viewport->y, viewport->w, viewport->h);
+            sceGuOffset(
+                        2048 - (viewport->w >> 1),
+                        2048 - (viewport->h >> 1));
+                        sceGuViewport(2048, 2048, viewport->w, viewport->h);
             sceGuEnable(GU_SCISSOR_TEST);
             sceGuScissor(viewport->x, viewport->y, viewport->w, viewport->h);
             break;
@@ -1540,7 +1535,7 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
     renderer->QueueGeometry = PSP_QueueGeometry;
     renderer->QueueFillRects = PSP_QueueFillRects;
     renderer->QueueCopy = PSP_QueueCopy;
-    renderer->QueueCopyEx = PSP_QueueCopyEx;
+    //renderer->QueueCopyEx = PSP_QueueCopyEx;
     renderer->RunCommandQueue = PSP_RunCommandQueue;
     renderer->RenderReadPixels = PSP_RenderReadPixels;
     renderer->RenderPresent = PSP_RenderPresent;
@@ -1628,12 +1623,14 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
 
     signaled_cond = SDL_CreateCond();
     if(signaled_cond == NULL){
-        return SDL_OutOfMemory();
+        SDL_OutOfMemory();
+        return NULL;
     }
 
     signaled_mutex = SDL_CreateMutex();
     if(signaled_mutex == NULL) {
-        return SDL_OutOfMemory();
+        SDL_OutOfMemory();
+        return NULL;
     }
 
 
